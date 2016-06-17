@@ -1,0 +1,195 @@
+---
+title: "Practical machine learning course project"
+author: "Ilya Semenov"
+date: '17 June 2016 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Overview
+
+Given the data collected from _Jawbone Up, Nike FuelBand, FitBit_ devices that record personal physical activities performed by volunteers predict the manner in which they perform their exercises.
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+Key specific questions to answer were as follows:
+
+* how the model were built;
+* cross validation usage principles;
+* what expected sample error is;
+* what were the reasons for choices made;
+* use final prediction model to predict 20 different test cases.
+
+##Data sources
+
+Data for the project were obtained as two datasets: [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [testing](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+##Getting and loading data
+
+```{r}
+suppressWarnings(suppressMessages(library(caret)))
+suppressWarnings(suppressMessages(library(rpart)))
+suppressWarnings(suppressMessages(library(rattle)))
+suppressWarnings(suppressMessages(library(randomForest)))
+
+url_training <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+file_training <- "pml-training.csv"
+if (!file.exists(file_training)) {
+  download.file(url = url_training, destfile = file_training)
+}
+
+url_testing <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+file_testing <- "pml-testing.csv"
+if (!file.exists(file_testing)) {
+  download.file(url = url_testing, destfile = file_testing)
+}
+
+df_train <- read.csv(file_training, na.strings = c("NA", "", "<NA>"), header = TRUE)
+df_test  <- read.csv(file_testing, na.strings = c("NA", "",  "<NA>"), header = TRUE)
+
+#verify train and test datasets have similar structure
+all.equal(colnames(df_train)[1:length(colnames(df_train))-1], colnames(df_test)[1:length(colnames(df_test))-1])
+```
+
+##Training model data preparation
+
+```{r}
+dim(df_train)
+summary(df_train$classe)
+```
+
+There are 19622 observations of 160 variables available. Prediction model bases on a _classe_ variable, there are 5 different _classes_ total. In order to train a model we have to split data into a training and testing datasets.
+
+```{r}
+set.seed(10203)
+inTrain <- createDataPartition(y = df_train$classe, p = .7, list = FALSE)
+training <- df_train[inTrain,]
+testing <- df_train[-inTrain,]
+dim(testing)
+```
+
+There are 159 variables available for model training (160 minus _classe_), so we need to check if  reducing the number of predictors is possible. Best candidates are variables with big number of missing values.
+
+```{r}
+na_vars <- sapply(training, function(x) {sum(is.na(x))})
+table(na_vars)
+```
+
+Let remove 100 variables with almost every observation missing from training dataset.
+
+```{r}
+rm_cols <- names(na_vars[na_vars == 13468])
+training <- training[, !names(training) %in% rm_cols]
+testing <- testing[, !names(testing) %in% rm_cols] #need to remove columns in test dataset
+df_test <- df_test[, !names(df_test) %in% rm_cols] #and in a control test dataset too
+str(training)
+```
+
+As a final step we'll remove an ID variable (column No 1) in _training_ and _testing_ datasets to avoid interference with machine learning algorithms.
+```{r}
+training <- training[c(-1)]
+testing  <- testing[c(-1)]
+df_test  <- df_test[c(-1)]
+clean1 <- colnames(training)
+clean2 <- colnames(training[, -59])
+testing <- testing[clean1]
+df_test <- df_test[clean2]
+for (i in 1:length(df_test) ) {
+     for(j in 1:length(training)) {
+         if( length( grep(names(training[i]), names(df_test)[j]) ) == 1)  {
+             class(df_test[j]) <- class(training[i])
+         }      
+     }      
+}
+df_test <- rbind(training[2, -59], df_test)
+df_test <- df_test[-1,]
+```
+
+##Implementing Decision tree model
+
+Let build a model based on a machine learning Decision tree algorithm. We'll use 'class' method for all the models below since we have a classification task.
+
+```{r}
+modFitDT <- rpart(classe ~ ., data = training, method = "class")
+```
+
+Calculating prediction and evaluating prediction results.
+```{r}
+predictionDT <- predict(modFitDT, testing, type = "class")
+cmdt <- confusionMatrix(predictionDT, testing$classe)
+cmdt
+```
+
+```{r}
+plot(cmdt$table, col = cmdt$byClass, main = paste("Decision tree Confusion matrix, Accuracy = ", round(cmdt$overall['Accuracy'], 4)))
+```
+
+Prediction accuracy for Decision tree algorithm equals *0.88*.
+
+##Implementing prediction with Random forests
+
+Let build a model based on a Random forests prediction algorithm.
+```{r}
+set.seed(10203)
+modFitRF <- randomForest(classe ~ ., data = training)
+predictionRF <- predict(modFitRF, testing, type = 'class')
+cmrf <- confusionMatrix(predictionRF, testing$classe)
+cmrf
+```
+
+```{r}
+plot(modFitRF, main = "Random forest model plot")
+```
+
+```{r}
+plot(cmrf$table, col = cmrf$byClass, main = paste("Decision tree Confusion matrix, Accuracy = ", round(cmrf$overall['Accuracy'], 4)))
+```
+
+Prediction accuracy for Random forests prediction algorithm equals *0.99*.
+
+##Implement Generalized boosted regression algorithm
+
+Let build a model based on a Generalized boosted regression algorithm.
+```{r}
+set.seed(10203)
+fitControl <- trainControl(method = 'repeatedcv', number = 5, repeats = 1)
+modFitGBM <- train(classe ~ ., data = training, method = 'gbm', trControl = fitControl, verbose = FALSE)
+predictionGBM <- predict(modFitGBM, newdata = testing)
+cmgbm <- confusionMatrix(predictionGBM, testing$classe)
+cmgbm
+```
+
+```{r}
+plot(modFitGBM)
+```
+
+```{r}
+plot(cmgbm$table, col = cmgbm$byClass, main = paste("Generalized boosted regression Confusion matrix, Accuracy = ", round(cmgbm$overall['Accuracy'], 4)))
+```
+
+Generalized boosted regression accuracy *0.99* appears to be only slightly worse than Random forests, but the algorithm is much more greedy for computational resources.
+
+The best choice for a given data seems to be a Random forest algorithm since it provides highest prediction accuracy together with being fast enough.
+
+##Prediction on a given test dataset
+
+```{r}
+predictionTEST <- predict(modFitRF, df_test, type = 'class')
+predictionTEST
+```
+
+####Quiz answers files creation sequence
+```{r}
+write_answers = function(x) {
+  n = length(x)
+  for(i in 1:n)
+  {
+    filepath = "e:/rwd/"
+    filename = paste0(filepath, "problem_id_",i,".txt")
+    write.table(x[i], file = filename, quote = FALSE, row.names = FALSE,    col.names = FALSE) }
+}
+#write_answers(predictionTEST)
+```
